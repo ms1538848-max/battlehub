@@ -1,269 +1,286 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-  <meta name="theme-color" content="#070914">
-  <title>BattleHub Tournament</title>
-  <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#070912">
+<title>BattleHub Tournament</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 
 <body>
 
+<div id="toast"></div>
+
 <header class="topbar">
-  <div>
-    <div class="brand">BATTLE<span>HUB</span></div>
-    <small>Free Fire Tournament</small>
+  <div class="brand" id="adminLogo">
+    <div class="brand-icon">⚔</div>
+    <div>
+      <div class="brand-name">BATTLEHUB</div>
+      <div class="brand-sub">TOURNAMENT</div>
+    </div>
   </div>
-  <button class="icon-btn" onclick="showPage('profile')">👤</button>
+  <button class="icon-btn" onclick="refreshCurrent()">↻</button>
 </header>
 
-<main>
+<main id="app">
 
   <!-- HOME -->
-  <section id="home" class="page active">
+  <section id="homePage" class="page active">
     <div class="hero">
-      <div class="hero-badge">🔥 FREE ENTRY</div>
-      <h1>Ready for the<br><span>Battle?</span></h1>
-      <p>Join tournaments, get your room details and compete for the top spot.</p>
-      <button class="primary-btn" onclick="scrollToTournaments()">Explore Tournaments →</button>
+      <div>
+        <span class="badge">FREE FIRE</span>
+        <h1>Play. Compete.<br><span>Win Glory.</span></h1>
+        <p>Join custom room tournaments and compete with other players.</p>
+      </div>
+    </div>
+
+    <!-- SHAHID PLAYS YOUTUBE -->
+    <div class="youtube-card">
+      <div class="youtube-icon">▶</div>
+
+      <div class="youtube-info">
+        <div class="youtube-title">Shahid Plays</div>
+        <div class="youtube-subtitle">
+          🎮 Free Fire • Gaming • Tournament
+        </div>
+      </div>
+
+      <a
+        class="youtube-btn"
+        href="https://youtube.com/@shahidplaysyt"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Subscribe
+      </a>
     </div>
 
     <div class="section-head">
-      <h2>Live & Upcoming</h2>
-      <button onclick="showPage('tournaments')">See All</button>
+      <h2>🔥 Live Tournaments</h2>
+      <button class="small-btn" onclick="loadTournaments()">Refresh</button>
     </div>
 
-    <div id="homeTournaments" class="tournament-list"></div>
+    <div id="tournamentList" class="cards"></div>
   </section>
 
-
-  <!-- TOURNAMENTS -->
-  <section id="tournaments" class="page">
-    <div class="page-title">
-      <h1>Tournaments</h1>
-      <p>Choose your battle</p>
-    </div>
-
-    <div id="tournamentList" class="tournament-list"></div>
-  </section>
-
-
-  <!-- TOURNAMENT DETAILS -->
-  <section id="details" class="page">
-    <button class="back-btn" onclick="showPage('tournaments')">← Back</button>
+  <!-- DETAILS -->
+  <section id="detailsPage" class="page">
+    <button class="back-btn" onclick="goHome()">← Back</button>
     <div id="detailsContent"></div>
   </section>
 
-
   <!-- MY TOURNAMENTS -->
-  <section id="my" class="page">
+  <section id="myPage" class="page">
     <div class="page-title">
       <h1>My Tournaments</h1>
-      <p>Your joined matches</p>
+      <p>Your joined tournaments</p>
     </div>
-    <div id="myTournamentList"></div>
+    <div id="myTournamentList" class="cards"></div>
   </section>
-
 
   <!-- LEADERBOARD -->
-  <section id="leaderboard" class="page">
+  <section id="leaderboardPage" class="page">
     <div class="page-title">
-      <h1>Leaderboard</h1>
-      <p>Top players</p>
+      <h1>🏆 Leaderboard</h1>
+      <p>Approved tournament results</p>
     </div>
-
-    <div class="podium">
-      <div class="podium-player second">
-        <div class="rank">2</div>
-        <div class="avatar">🥈</div>
-        <b id="secondName">---</b>
-        <small id="secondPoints">0 pts</small>
-      </div>
-
-      <div class="podium-player first">
-        <div class="rank">1</div>
-        <div class="avatar">🏆</div>
-        <b id="firstName">---</b>
-        <small id="firstPoints">0 pts</small>
-      </div>
-
-      <div class="podium-player third">
-        <div class="rank">3</div>
-        <div class="avatar">🥉</div>
-        <b id="thirdName">---</b>
-        <small id="thirdPoints">0 pts</small>
-      </div>
-    </div>
-
-    <div id="leaderboardList"></div>
+    <div id="leaderboardList" class="cards"></div>
   </section>
 
-
   <!-- PROFILE -->
-  <section id="profile" class="page">
+  <section id="profilePage" class="page">
     <div class="page-title">
       <h1>Profile</h1>
-      <p>Your tournament profile</p>
+      <p>Your BattleHub profile</p>
     </div>
 
     <div class="profile-card">
-      <div class="big-avatar">👤</div>
+      <div class="avatar" id="profileAvatar">S</div>
       <h2 id="profileName">Player</h2>
-      <p id="profileUid">UID: Not set</p>
+      <p id="profileUID">UID not set</p>
     </div>
 
     <div class="form-card">
       <label>Player Name</label>
-      <input id="playerNameInput" type="text" placeholder="Enter player name">
+      <input id="profileNameInput" placeholder="Enter player name">
 
       <label>Free Fire UID</label>
-      <input id="playerUidInput" type="text" placeholder="Enter UID">
+      <input id="profileUIDInput" placeholder="Enter UID">
 
       <button class="primary-btn" onclick="saveProfile()">Save Profile</button>
     </div>
-
-    <div class="stats-grid">
-      <div class="stat">
-        <strong id="joinedCount">0</strong>
-        <span>Joined</span>
-      </div>
-      <div class="stat">
-        <strong id="resultCount">0</strong>
-        <span>Results</span>
-      </div>
-      <div class="stat">
-        <strong id="totalPoints">0</strong>
-        <span>Points</span>
-      </div>
-    </div>
   </section>
 
-
-  <!-- ADMIN -->
-  <section id="admin" class="page">
+  <!-- ADMIN LOGIN -->
+  <section id="adminLoginPage" class="page">
+    <button class="back-btn" onclick="goHome()">← Back</button>
 
     <div class="page-title">
-      <h1>Admin Panel</h1>
-      <p>Create and manage tournaments</p>
-    </div>
-
-    <div class="admin-warning">
-      ⚙️ Demo Admin Mode
-      <small>This version stores data only on this device.</small>
+      <h1>Admin Login</h1>
+      <p>BattleHub administrator access</p>
     </div>
 
     <div class="form-card">
+      <label>Email</label>
+      <input id="adminEmail" type="email" placeholder="Admin email">
 
-      <label>Tournament Name</label>
-      <input id="tName" type="text" placeholder="Example: Friday Night Battle">
+      <label>Password</label>
+      <input id="adminPassword" type="password" placeholder="Password">
 
-      <label>Game</label>
-      <select id="tGame">
-        <option>Free Fire</option>
-        <option>Free Fire MAX</option>
-      </select>
+      <button class="primary-btn" onclick="adminLogin()">Login</button>
+      <button class="text-btn" onclick="adminResetPassword()">Forgot Password?</button>
 
-      <label>Date</label>
-      <input id="tDate" type="date">
-
-      <label>Time</label>
-      <input id="tTime" type="time">
-
-      <label>Maximum Players</label>
-      <input id="tMax" type="number" min="2" value="48">
-
-      <label>Room ID</label>
-      <input id="tRoomId" type="text" placeholder="Room ID">
-
-      <label>Room Password</label>
-      <input id="tRoomPass" type="text" placeholder="Room Password">
-
-      <button class="primary-btn" onclick="createTournament()">
-        + Create Tournament
-      </button>
-
+      <div id="adminLoginStatus"></div>
     </div>
-
-    <div class="section-head">
-      <h2>Manage Matches</h2>
-    </div>
-
-    <div id="adminTournamentList"></div>
-
   </section>
 
+  <!-- ADMIN PANEL -->
+  <section id="adminPage" class="page">
+    <div class="admin-header">
+      <div>
+        <span class="badge">ADMIN</span>
+        <h1>Admin Panel</h1>
+        <p>Manage BattleHub tournaments</p>
+      </div>
+      <button class="danger-outline" onclick="adminLogout()">Logout</button>
+    </div>
 
-  <!-- RESULT -->
-  <section id="result" class="page">
-    <button class="back-btn" onclick="showPage('my')">← Back</button>
+    <div class="admin-tabs">
+      <button class="admin-tab active" onclick="showAdminTab('create')">➕ Create</button>
+      <button class="admin-tab" onclick="showAdminTab('manage')">🎮 Tournaments</button>
+    </div>
+
+    <!-- CREATE -->
+    <div id="adminCreateTab">
+
+      <div class="admin-card">
+        <h2>🚀 Create Tournament</h2>
+
+        <label>Tournament Name</label>
+        <input id="tName" placeholder="Example: Friday Night Battle">
+
+        <label>Game</label>
+        <input id="tGame" value="Free Fire">
+
+        <div class="two-col">
+          <div>
+            <label>Date</label>
+            <input id="tDate" type="date">
+          </div>
+
+          <div>
+            <label>Time</label>
+            <input id="tTime" type="time">
+          </div>
+        </div>
+
+        <label>Maximum Players</label>
+        <input id="tMax" type="number" min="2" value="48">
+
+        <div class="info-box">
+          Room ID/password optional hai. Match ke time admin room details release kar sakta hai.
+        </div>
+
+        <label>Room ID <span class="optional">(Optional)</span></label>
+        <input id="tRoomId" placeholder="Room ID">
+
+        <label>Room Password <span class="optional">(Optional)</span></label>
+        <input id="tRoomPassword" placeholder="Room Password">
+
+        <button class="primary-btn" onclick="createTournament()">Create Tournament</button>
+
+        <div id="createStatus"></div>
+      </div>
+    </div>
+
+    <!-- MANAGE -->
+    <div id="adminManageTab" class="hidden">
+      <div class="section-head">
+        <h2>🎮 Tournaments</h2>
+        <button class="small-btn" onclick="loadAdminTournaments()">↻ Refresh</button>
+      </div>
+
+      <div id="adminTournamentList"></div>
+    </div>
+  </section>
+
+  <!-- ADMIN PLAYERS -->
+  <section id="adminPlayersPage" class="page">
+    <button class="back-btn" onclick="backToAdmin()">← Admin Panel</button>
 
     <div class="page-title">
-      <h1>Submit Result</h1>
-      <p>Enter your match result</p>
+      <span class="badge">PLAYER MANAGEMENT</span>
+      <h1 id="adminPlayersTitle">Players</h1>
+      <p>Joined players list</p>
     </div>
 
-    <div class="form-card">
+    <div class="player-stats">
+      <div class="stat-card">
+        <span>👥</span>
+        <strong id="adminPlayerCount">0</strong>
+        <small>Total Players</small>
+      </div>
 
-      <input id="resultTournamentId" type="hidden">
-
-      <label>Player Name</label>
-      <input id="resultName" type="text">
-
-      <label>Placement</label>
-      <input id="resultPlacement" type="number" min="1" placeholder="Example: 1">
-
-      <label>Kills</label>
-      <input id="resultKills" type="number" min="0" placeholder="Example: 5">
-
-      <label>Points</label>
-      <input id="resultPoints" type="number" min="0" placeholder="Example: 20">
-
-      <label>Proof / Note</label>
-      <textarea id="resultNote" placeholder="Optional match details"></textarea>
-
-      <button class="primary-btn" onclick="submitResult()">
-        Submit Result
-      </button>
-
+      <div class="stat-card">
+        <span>🎯</span>
+        <strong id="adminPlayerMax">0</strong>
+        <small>Max Players</small>
+      </div>
     </div>
+
+    <div class="search-box">
+      <span>🔎</span>
+      <input
+        id="playerSearch"
+        type="search"
+        placeholder="Search player name or UID..."
+        oninput="filterAdminPlayers()"
+      >
+      <button onclick="loadAdminPlayers()">↻</button>
+    </div>
+
+    <div id="adminPlayersList"></div>
+  </section>
+
+  <!-- ADMIN RESULTS -->
+  <section id="adminResultsPage" class="page">
+    <button class="back-btn" onclick="backToAdmin()">← Admin Panel</button>
+
+    <div class="page-title">
+      <span class="badge">RESULTS</span>
+      <h1>Results</h1>
+      <p>Review submitted results</p>
+    </div>
+
+    <div id="adminResultsList"></div>
   </section>
 
 </main>
 
-
-<!-- BOTTOM NAV -->
 <nav class="bottom-nav">
-  <button onclick="showPage('home')" data-page="home">
-    <span>⌂</span>
+  <button onclick="showPage('homePage')" data-page="homePage">
+    <span>🏠</span>
     <small>Home</small>
   </button>
 
-  <button onclick="showPage('tournaments')" data-page="tournaments">
-    <span>⚔</span>
-    <small>Matches</small>
-  </button>
-
-  <button onclick="showPage('my')" data-page="my">
+  <button onclick="showPage('myPage')" data-page="myPage">
     <span>🎮</span>
-    <small>My Games</small>
+    <small>My Tournaments</small>
   </button>
 
-  <button onclick="showPage('leaderboard')" data-page="leaderboard">
+  <button onclick="showPage('leaderboardPage')" data-page="leaderboardPage">
     <span>🏆</span>
-    <small>Ranks</small>
+    <small>Leaderboard</small>
   </button>
 
-  <button onclick="showPage('profile')" data-page="profile">
+  <button onclick="showPage('profilePage')" data-page="profilePage">
     <span>👤</span>
     <small>Profile</small>
   </button>
 </nav>
 
-
-<!-- TOAST -->
-<div id="toast" class="toast"></div>
-
 <script src="app.js"></script>
 </body>
-</html>
+      </html>
