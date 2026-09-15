@@ -1,1246 +1,1426 @@
-const STORAGE_TOURNAMENTS = "battlehub_tournaments_v2";
-const STORAGE_PLAYER = "battlehub_player_v2";
-const STORAGE_RESULTS = "battlehub_results_v2";
+const SUPABASE_URL = "https://lpcynjvqdfcwfgekexis.supabase.co";
+const SUPABASE_KEY = "sb_publishable_vUjrdO7mT_EsG_PooVambw_jpFWd6Ez";
 
-let tournaments = JSON.parse(
-  localStorage.getItem(STORAGE_TOURNAMENTS) || "null"
+const supabaseClient = supabase.createClient(
+  SUPABASE_URL,
+  SUPABASE_KEY
 );
 
-let player = JSON.parse(
-  localStorage.getItem(STORAGE_PLAYER) || "null"
-);
+const ADMIN_EMAIL = "Ms1538848@gmail.com";
 
-let results = JSON.parse(
-  localStorage.getItem(STORAGE_RESULTS) || "[]"
-);
-
+let tournaments = [];
 let currentTournament = null;
+let currentAdminPlayersTournament = null;
+let adminPlayers = [];
+let adminResultsTournament = null;
 
+let playerProfile = JSON.parse(
+  localStorage.getItem("battlehub_profile") || "null"
+) || {
+  name: "",
+  uid: ""
+};
 
-/* =========================
-   INITIAL DATA
-========================= */
+let playerCache = {};
 
-if(!tournaments){
-  tournaments = [
-    {
-      id: createId(),
-      name:"Friday Night Battle",
-      game:"Free Fire",
-      date:getFutureDate(1),
-      time:"20:00",
-      maxPlayers:48,
-      players:[],
-      roomId:"12345678",
-      roomPass:"FREE123",
-      roomReleased:false,
-      createdAt:Date.now()
-    },
-    {
-      id:createId(),
-      name:"Weekend Clash",
-      game:"Free Fire",
-      date:getFutureDate(2),
-      time:"21:00",
-      maxPlayers:24,
-      players:[],
-      roomId:"87654321",
-      roomPass:"BATTLE99",
-      roomReleased:false,
-      createdAt:Date.now()
-    }
-  ];
+document.addEventListener("DOMContentLoaded", async () => {
+  setupAdminUnlock();
+  loadProfileUI();
+  await loadTournaments();
+  setupRealtime();
+});
 
-  saveTournaments();
+function $(id){
+  return document.getElementById(id);
 }
 
-if(!player){
-  player = {
-    name:"Player",
-    uid:""
-  };
+function showPage(id){
+  document.querySelectorAll(".page").forEach(p => {
+    p.classList.remove("active");
+  });
 
-  savePlayer();
+  const page = $(id);
+  if(page) page.classList.add("active");
+
+  document.querySelectorAll(".bottom-nav button").forEach(btn => {
+    btn.classList.toggle(
+      "active",
+      btn.dataset.page === id
+    );
+  });
+
+  window.scrollTo({top:0,behavior:"smooth"});
+
+  if(id === "myPage") loadMyTournaments();
+  if(id === "leaderboardPage") loadLeaderboard();
 }
 
-
-/* =========================
-   BASIC HELPERS
-========================= */
-
-function createId(){
-  return Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+function goHome(){
+  showPage("homePage");
 }
 
-function getFutureDate(days){
-  const d = new Date();
-  d.setDate(d.getDate()+days);
-
-  const y = d.getFullYear();
-  const m = String(d.getMonth()+1).padStart(2,"0");
-  const day = String(d.getDate()).padStart(2,"0");
-
-  return `${y}-${m}-${day}`;
+function backToAdmin(){
+  showPage("adminPage");
+  loadAdminTournaments();
 }
 
-function saveTournaments(){
-  localStorage.setItem(
-    STORAGE_TOURNAMENTS,
-    JSON.stringify(tournaments)
-  );
+async function refreshCurrent(){
+  const active = document.querySelector(".page.active");
+
+  if(!active){
+    await loadTournaments();
+    return;
+  }
+
+  if(active.id === "homePage") await loadTournaments();
+  else if(active.id === "myPage") await loadMyTournaments();
+  else if(active.id === "leaderboardPage") await loadLeaderboard();
+  else if(active.id === "adminPage") await loadAdminTournaments();
+  else if(active.id === "adminPlayersPage") await loadAdminPlayers();
+  else if(active.id === "adminResultsPage") await loadAdminResults();
+  else if(active.id === "detailsPage" && currentTournament){
+    await openTournament(currentTournament.id);
+  }
 }
 
-function savePlayer(){
-  localStorage.setItem(
-    STORAGE_PLAYER,
-    JSON.stringify(player)
-  );
+function showToast(message){
+  const toast = $("toast");
+  toast.textContent = message;
+  toast.classList.add("show");
+
+  clearTimeout(window.toastTimer);
+
+  window.toastTimer = setTimeout(() => {
+    toast.classList.remove("show");
+  }, 2200);
 }
 
-function saveResults(){
-  localStorage.setItem(
-    STORAGE_RESULTS,
-    JSON.stringify(results)
-  );
-}
-
-function esc(value){
+function escapeHTML(value){
   return String(value ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#039;");
 }
 
 function formatDate(date){
   if(!date) return "-";
 
-  const d = new Date(date+"T00:00:00");
-
-  return d.toLocaleDateString("en-IN",{
-    day:"2-digit",
-    month:"short",
-    year:"numeric"
-  });
+  return new Date(date + "T00:00:00")
+    .toLocaleDateString("en-IN",{
+      day:"2-digit",
+      month:"short",
+      year:"numeric"
+    });
 }
 
-function tournamentDateTime(t){
-  return new Date(`${t.date}T${t.time}:00`);
+function formatTime(time){
+  if(!time) return "-";
+
+  const parts = time.split(":");
+  let h = Number(parts[0]);
+  const m = parts[1];
+
+  const suffix = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+
+  return `${h}:${m} ${suffix}`;
 }
 
-function getStatus(t){
-
+function tournamentStatus(t){
   const now = new Date();
-  const start = tournamentDateTime(t);
-  const end = new Date(start.getTime()+90*60000);
 
-  if(now < start) return "upcoming";
-  if(now >= start && now <= end) return "live";
+  const match = new Date(
+    `${t.match_date}T${t.match_time}`
+  );
 
-  return "finished";
+  return now >= match ? "LIVE" : "UPCOMING";
 }
 
-function getStatusText(t){
-  const status = getStatus(t);
+async function loadTournaments(){
+  const box = $("tournamentList");
 
-  if(status === "live") return "LIVE";
-  if(status === "finished") return "FINISHED";
-
-  return "UPCOMING";
-}
-
-
-/* =========================
-   NAVIGATION
-========================= */
-
-function showPage(page){
-
-  document.querySelectorAll(".page").forEach(p=>{
-    p.classList.remove("active");
-  });
-
-  const target = document.getElementById(page);
-
-  if(target){
-    target.classList.add("active");
+  if(box){
+    box.innerHTML = `<div class="loading">Loading tournaments...</div>`;
   }
 
-  document.querySelectorAll(".bottom-nav button").forEach(btn=>{
-    btn.classList.remove("active");
+  const {data,error} = await supabaseClient
+    .from("battlehub_tournaments")
+    .select("*")
+    .order("match_date",{ascending:true})
+    .order("match_time",{ascending:true});
 
-    if(btn.dataset.page === page){
-      btn.classList.add("active");
-    }
-  });
-
-  if(page === "home"){
-    renderHome();
-  }
-
-  if(page === "tournaments"){
-    renderTournaments();
-  }
-
-  if(page === "my"){
-    renderMyTournaments();
-  }
-
-  if(page === "leaderboard"){
-    renderLeaderboard();
-  }
-
-  if(page === "profile"){
-    renderProfile();
-  }
-
-  if(page === "admin"){
-    renderAdmin();
-  }
-
-  window.scrollTo({
-    top:0,
-    behavior:"smooth"
-  });
-}
-
-
-/* =========================
-   HOME
-========================= */
-
-function renderHome(){
-
-  const box = document.getElementById("homeTournaments");
-
-  if(!box) return;
-
-  const list = tournaments
-    .filter(t=>getStatus(t)!=="finished")
-    .slice(0,3);
-
-  if(!list.length){
-    box.innerHTML = `<div class="empty">No upcoming tournaments.</div>`;
+  if(error){
+    console.error(error);
+    if(box) box.innerHTML =
+      `<div class="empty">Unable to load tournaments.</div>`;
     return;
   }
 
-  box.innerHTML = list.map(tournamentCard).join("");
+  tournaments = data || [];
+
+  await loadPlayerCounts();
+
+  renderTournaments();
 }
 
-function scrollToTournaments(){
-  showPage("tournaments");
-}
+async function loadPlayerCounts(){
+  playerCache = {};
 
+  const {data,error} = await supabaseClient
+    .from("battlehub_players")
+    .select("tournament_id");
 
-/* =========================
-   TOURNAMENT LIST
-========================= */
+  if(error){
+    console.error(error);
+    return;
+  }
 
-function tournamentCard(t){
-
-  const status = getStatus(t);
-
-  return `
-    <div class="tournament-card">
-
-      <div class="card-top">
-        <span class="game-tag">🎮 ${esc(t.game)}</span>
-        <span class="status ${status}">
-          ${getStatusText(t)}
-        </span>
-      </div>
-
-      <h3>${esc(t.name)}</h3>
-
-      <p>📅 ${formatDate(t.date)} &nbsp; • &nbsp; ⏰ ${esc(t.time)}</p>
-
-      <div class="card-info">
-
-        <div class="info-box">
-          <strong>FREE</strong>
-          <span>Entry</span>
-        </div>
-
-        <div class="info-box">
-          <strong>${t.players.length}/${t.maxPlayers}</strong>
-          <span>Players</span>
-        </div>
-
-        <div class="info-box">
-          <strong>${t.roomReleased ? "OPEN" : "LOCKED"}</strong>
-          <span>Room</span>
-        </div>
-
-      </div>
-
-      <button class="card-btn" onclick="openTournament('${t.id}')">
-        View Tournament →
-      </button>
-
-    </div>
-  `;
+  (data || []).forEach(row => {
+    playerCache[row.tournament_id] =
+      (playerCache[row.tournament_id] || 0) + 1;
+  });
 }
 
 function renderTournaments(){
-
-  const box = document.getElementById("tournamentList");
+  const box = $("tournamentList");
 
   if(!box) return;
 
   if(!tournaments.length){
-    box.innerHTML = `<div class="empty">No tournaments available.</div>`;
+    box.innerHTML =
+      `<div class="empty">No tournaments available right now.</div>`;
     return;
   }
 
-  box.innerHTML = tournaments
-    .sort((a,b)=>tournamentDateTime(a)-tournamentDateTime(b))
-    .map(tournamentCard)
-    .join("");
+  box.innerHTML = tournaments.map(t => {
+    const status = tournamentStatus(t);
+    const count = playerCache[t.id] || 0;
+
+    return `
+      <div class="tournament-card">
+        <div class="card-top">
+          <div>
+            <h3 class="card-title">${escapeHTML(t.name)}</h3>
+            <div class="card-game">${escapeHTML(t.game)}</div>
+          </div>
+
+          <span class="status ${status === "LIVE" ? "live" : "upcoming"}">
+            ${status}
+          </span>
+        </div>
+
+        <div class="card-info">
+          <div class="info-item">
+            <small>DATE</small>
+            <strong>${formatDate(t.match_date)}</strong>
+          </div>
+
+          <div class="info-item">
+            <small>TIME</small>
+            <strong>${formatTime(t.match_time)}</strong>
+          </div>
+
+          <div class="info-item">
+            <small>PLAYERS</small>
+            <strong>${count}/${t.max_players}</strong>
+          </div>
+        </div>
+
+        <button class="primary-btn" onclick="openTournament('${t.id}')">
+          View Tournament
+        </button>
+      </div>
+    `;
+  }).join("");
 }
 
-
-/* =========================
-   TOURNAMENT DETAILS
-========================= */
-
-function openTournament(id){
-
-  const t = tournaments.find(x=>x.id===id);
+async function openTournament(id){
+  const t = tournaments.find(x => x.id === id);
 
   if(!t) return;
 
   currentTournament = t;
+  showPage("detailsPage");
 
-  showPage("details");
-
-  renderDetails();
-}
-
-function renderDetails(){
-
-  const t = currentTournament;
-
-  if(!t) return;
-
-  const box = document.getElementById("detailsContent");
-
-  const joined = t.players.some(
-    p=>p.uid===player.uid && player.uid
-  );
-
-  const status = getStatus(t);
+  const box = $("detailsContent");
 
   box.innerHTML = `
-
-    <div class="detail-card">
-
-      <span class="game-tag">🎮 ${esc(t.game)}</span>
-
-      <h1>${esc(t.name)}</h1>
-
-      <div class="detail-meta">
-        📅 ${formatDate(t.date)}<br>
-        ⏰ ${esc(t.time)}<br>
-        👥 ${t.players.length}/${t.maxPlayers} Players<br>
-        🎟️ Entry: FREE
-      </div>
-
-      <div class="countdown">
-        <span>${status==="live" ? "MATCH STATUS" : "MATCH STARTS IN"}</span>
-        <strong id="countdownText">
-          ${status==="finished" ? "Match Finished" : "Loading..."}
-        </strong>
-      </div>
-
-      ${
-        joined
-        ?
-        `<button class="primary-btn" onclick="showToast('You are already joined!')">
-          ✓ Joined Tournament
-        </button>`
-        :
-        `<button class="primary-btn" onclick="joinTournament('${t.id}')">
-          Join Tournament
-        </button>`
-      }
-
-      <div class="room-box">
-
-        ${
-          t.roomReleased
-          ?
-          `
-          <h3>🔓 Room Details Released</h3>
-
-          <div class="room-row">
-            <span>Room ID</span>
-            <div>
-              <span class="room-value">${esc(t.roomId)}</span>
-              <button class="copy-btn"
-                onclick="copyText('${safeJs(t.roomId)}')">
-                Copy
-              </button>
-            </div>
-          </div>
-
-          <div class="room-row">
-            <span>Password</span>
-            <div>
-              <span class="room-value">${esc(t.roomPass)}</span>
-              <button class="copy-btn"
-                onclick="copyText('${safeJs(t.roomPass)}')">
-                Copy
-              </button>
-            </div>
-          </div>
-
-          <p style="color:var(--muted);font-size:11px">
-            Open Free Fire and manually join the Custom Room.
-          </p>
-          `
-          :
-          `
-          <div class="room-locked">
-            <div class="lock">🔒</div>
-            <strong>Room ID & Password Locked</strong>
-            <p style="color:var(--muted);font-size:12px">
-              Admin will release the room details before the match.
-            </p>
-          </div>
-          `
-        }
-
-      </div>
-
-      ${
-        joined
-        ?
-        `
-        <button class="card-btn"
-          style="margin-top:12px"
-          onclick="openResult('${t.id}')">
-          📝 Submit Match Result
-        </button>
-        `
-        :
-        ""
-      }
-
-    </div>
+    <div class="loading">Loading tournament...</div>
   `;
 
-  startCountdown();
+  const {data:players,error} = await supabaseClient
+    .from("battlehub_players")
+    .select("*")
+    .eq("tournament_id",id)
+    .order("joined_at",{ascending:true});
+
+  if(error){
+    console.error(error);
+  }
+
+  const playerList = players || [];
+  const count = playerList.length;
+
+  box.innerHTML = `
+    <div class="details-hero">
+      <span class="badge">${escapeHTML(t.game)}</span>
+      <h1>${escapeHTML(t.name)}</h1>
+
+      <div class="card-info">
+        <div class="info-item">
+          <small>DATE</small>
+          <strong>${formatDate(t.match_date)}</strong>
+        </div>
+
+        <div class="info-item">
+          <small>TIME</small>
+          <strong>${formatTime(t.match_time)}</strong>
+        </div>
+
+        <div class="info-item">
+          <small>PLAYERS</small>
+          <strong>${count}/${t.max_players}</strong>
+        </div>
+      </div>
+
+      <button
+        class="primary-btn"
+        onclick="joinTournament('${t.id}')"
+        ${count >= t.max_players ? "disabled" : ""}
+      >
+        ${count >= t.max_players ? "Tournament Full" : "Join Tournament"}
+      </button>
+    </div>
+
+    <div class="room-box">
+      <h3>🔐 Custom Room</h3>
+
+      ${
+        t.room_released
+        ? `
+          <p style="color:#7df6a6">Room details released</p>
+
+          <div class="room-code">
+            <span>ID: <b>${escapeHTML(t.room_id || "-")}</b></span>
+            <button class="copy-btn"
+              onclick="copyText('${escapeHTML(t.room_id || "")}')">
+              Copy
+            </button>
+          </div>
+
+          <div class="room-code">
+            <span>Password: <b>${escapeHTML(t.room_password || "-")}</b></span>
+            <button class="copy-btn"
+              onclick="copyText('${escapeHTML(t.room_password || "")}')">
+              Copy
+            </button>
+          </div>
+
+          <div class="info-box">
+            Room ID aur password copy karke Free Fire Custom Room me manually join karein.
+          </div>
+        `
+        :
+        `
+          <div class="room-hidden">
+            🔒
+            <h3>Room Details Hidden</h3>
+            <p>
+              Admin match time ke aas-paas Room ID aur Password release karega.
+            </p>
+          </div>
+        `
+      }
+    </div>
+
+    <div class="form-card">
+      <h3>📊 Submit Result</h3>
+      <p style="color:#8992ad;font-size:12px">
+        Match ke baad apna result submit karein.
+      </p>
+
+      <button class="secondary-btn"
+        onclick="submitResult('${t.id}')">
+        Submit Result
+      </button>
+    </div>
+  `;
 }
 
-function safeJs(value){
-  return String(value ?? "")
-    .replaceAll("\\","\\\\")
-    .replaceAll("'","\\'");
-}
-
-
-/* =========================
-   JOIN
-========================= */
-
-function joinTournament(id){
-
-  if(!player.name || player.name==="Player"){
-    showToast("First set your player name in Profile.");
-    showPage("profile");
+async function joinTournament(tournamentId){
+  if(!playerProfile.name || !playerProfile.uid){
+    showToast("Pehle Profile me Name aur UID save karein.");
+    showPage("profilePage");
     return;
   }
 
-  const t = tournaments.find(x=>x.id===id);
+  const {data:existing} = await supabaseClient
+    .from("battlehub_players")
+    .select("id")
+    .eq("tournament_id",tournamentId)
+    .eq("player_uid",playerProfile.uid)
+    .maybeSingle();
 
-  if(!t) return;
+  if(existing){
+    showToast("You already joined this tournament.");
+    return;
+  }
 
-  if(t.players.length >= t.maxPlayers){
+  const {data:tournament} = await supabaseClient
+    .from("battlehub_tournaments")
+    .select("*")
+    .eq("id",tournamentId)
+    .single();
+
+  if(!tournament){
+    showToast("Tournament not found.");
+    return;
+  }
+
+  const {count} = await supabaseClient
+    .from("battlehub_players")
+    .select("*",{count:"exact",head:true})
+    .eq("tournament_id",tournamentId);
+
+  if((count || 0) >= tournament.max_players){
     showToast("Tournament is full.");
     return;
   }
 
-  if(t.players.some(p=>p.uid===player.uid && player.uid)){
-    showToast("Already joined.");
+  const {error} = await supabaseClient
+    .from("battlehub_players")
+    .insert({
+      tournament_id:tournamentId,
+      player_name:playerProfile.name,
+      player_uid:playerProfile.uid
+    });
+
+  if(error){
+    console.error(error);
+    showToast(error.code === "23505"
+      ? "You already joined."
+      : "Unable to join tournament.");
     return;
   }
 
-  const joiner = {
-    uid:player.uid || createId(),
-    name:player.name,
-    joinedAt:Date.now()
-  };
-
-  t.players.push(joiner);
-
-  saveTournaments();
-
-  currentTournament = t;
-
   showToast("Tournament joined successfully!");
-
-  renderDetails();
+  await openTournament(tournamentId);
 }
 
-
-/* =========================
-   COUNTDOWN
-========================= */
-
-let countdownTimer = null;
-
-function startCountdown(){
-
-  clearInterval(countdownTimer);
-
-  const t = currentTournament;
-
-  if(!t) return;
-
-  const el = document.getElementById("countdownText");
-
-  if(!el) return;
-
-  function update(){
-
-    const status = getStatus(t);
-
-    if(status==="finished"){
-      el.textContent = "Match Finished";
-      return;
-    }
-
-    if(status==="live"){
-      el.textContent = "MATCH IS LIVE 🔥";
-      return;
-    }
-
-    const diff = tournamentDateTime(t).getTime()-Date.now();
-
-    if(diff<=0){
-      el.textContent = "MATCH IS LIVE 🔥";
-      return;
-    }
-
-    const days = Math.floor(diff/86400000);
-    const hours = Math.floor((diff%86400000)/3600000);
-    const mins = Math.floor((diff%3600000)/60000);
-    const secs = Math.floor((diff%60000)/1000);
-
-    el.textContent =
-      `${days}d ${hours}h ${mins}m ${secs}s`;
-  }
-
-  update();
-
-  countdownTimer = setInterval(update,1000);
-}
-
-
-/* =========================
-   COPY
-========================= */
-
-function copyText(text){
-
-  if(navigator.clipboard){
-
-    navigator.clipboard.writeText(text)
-      .then(()=>{
-        showToast("Copied!");
-      })
-      .catch(()=>{
-        fallbackCopy(text);
-      });
-
-  }else{
-    fallbackCopy(text);
-  }
-}
-
-function fallbackCopy(text){
-
-  const area = document.createElement("textarea");
-
-  area.value = text;
-  document.body.appendChild(area);
-
-  area.select();
-  document.execCommand("copy");
-
-  area.remove();
-
-  showToast("Copied!");
-}
-
-
-/* =========================
-   MY TOURNAMENTS
-========================= */
-
-function renderMyTournaments(){
-
-  const box = document.getElementById("myTournamentList");
+async function loadMyTournaments(){
+  const box = $("myTournamentList");
 
   if(!box) return;
 
-  const mine = tournaments.filter(t=>
-    t.players.some(p=>p.uid===player.uid && player.uid)
-  );
-
-  if(!mine.length){
-
+  if(!playerProfile.uid){
     box.innerHTML = `
       <div class="empty">
-        🎮<br><br>
-        You haven't joined any tournament yet.
-        <br><br>
-        <button class="primary-btn"
-          onclick="showPage('tournaments')">
-          Find Tournament
-        </button>
+        Profile me UID save karein, phir joined tournaments yahan dikhenge.
       </div>
     `;
+    return;
+  }
+
+  const {data,error} = await supabaseClient
+    .from("battlehub_players")
+    .select("tournament_id")
+    .eq("player_uid",playerProfile.uid);
+
+  if(error){
+    box.innerHTML =
+      `<div class="empty">Unable to load.</div>`;
+    return;
+  }
+
+  const ids = (data || []).map(x => x.tournament_id);
+
+  const mine = tournaments.filter(t => ids.includes(t.id));
+
+  if(!mine.length){
+    box.innerHTML =
+      `<div class="empty">You haven't joined any tournament yet.</div>`;
+    return;
+  }
+
+  box.innerHTML = mine.map(t => `
+    <div class="tournament-card">
+      <h3 class="card-title">${escapeHTML(t.name)}</h3>
+      <p class="card-game">${formatDate(t.match_date)} • ${formatTime(t.match_time)}</p>
+
+      <button class="primary-btn"
+        onclick="openTournament('${t.id}')">
+        Open
+      </button>
+    </div>
+  `).join("");
+}
+
+async function submitResult(tournamentId){
+  if(!playerProfile.uid || !playerProfile.name){
+    showToast("Profile complete karein.");
+    return;
+  }
+
+  const placement = Number(
+    prompt("Your placement? Example: 1")
+  );
+
+  const kills = Number(
+    prompt("Your kills? Example: 5")
+  );
+
+  if(!Number.isInteger(placement) || placement < 1){
+    showToast("Invalid placement.");
+    return;
+  }
+
+  if(!Number.isInteger(kills) || kills < 0){
+    showToast("Invalid kills.");
+    return;
+  }
+
+  const points = Math.max(
+    0,
+    (101 - placement) + (kills * 2)
+  );
+
+  const {error} = await supabaseClient
+    .from("battlehub_results")
+    .upsert({
+      tournament_id:tournamentId,
+      player_uid:playerProfile.uid,
+      player_name:playerProfile.name,
+      placement,
+      kills,
+      points,
+      approved:false
+    },{
+      onConflict:"tournament_id,player_uid"
+    });
+
+  if(error){
+    console.error(error);
+    showToast("Result submit nahi hua.");
+    return;
+  }
+
+  showToast("Result submitted for review.");
+}
+
+async function loadLeaderboard(){
+  const box = $("leaderboardList");
+
+  if(!box) return;
+
+  box.innerHTML =
+    `<div class="loading">Loading leaderboard...</div>`;
+
+  const {data,error} = await supabaseClient
+    .from("battlehub_results")
+    .select("*")
+    .eq("approved",true)
+    .order("points",{ascending:false});
+
+  if(error){
+    console.error(error);
+    box.innerHTML =
+      `<div class="empty">Unable to load leaderboard.</div>`;
+    return;
+  }
+
+  if(!data || !data.length){
+    box.innerHTML =
+      `<div class="empty">No approved results yet.</div>`;
+    return;
+  }
+
+  const totals = {};
+
+  data.forEach(r => {
+    const key = r.player_uid;
+
+    if(!totals[key]){
+      totals[key] = {
+        name:r.player_name,
+        uid:r.player_uid,
+        points:0,
+        kills:0,
+        matches:0
+      };
+    }
+
+    totals[key].points += Number(r.points || 0);
+    totals[key].kills += Number(r.kills || 0);
+    totals[key].matches++;
+  });
+
+  const rows = Object.values(totals)
+    .sort((a,b) => b.points - a.points);
+
+  box.innerHTML = rows.map((r,index) => `
+    <div class="result-card">
+      <div class="result-top">
+        <strong>#${index + 1} ${escapeHTML(r.name)}</strong>
+        <strong>${r.points} pts</strong>
+      </div>
+
+      <div class="result-meta">
+        UID: ${escapeHTML(r.uid)}
+        • Matches: ${r.matches}
+        • Kills: ${r.kills}
+      </div>
+    </div>
+  `).join("");
+}
+
+/* PROFILE */
+
+function loadProfileUI(){
+  $("profileNameInput").value = playerProfile.name || "";
+  $("profileUIDInput").value = playerProfile.uid || "";
+
+  $("profileName").textContent =
+    playerProfile.name || "Player";
+
+  $("profileUID").textContent =
+    playerProfile.uid
+      ? `UID: ${playerProfile.uid}`
+      : "UID not set";
+
+  $("profileAvatar").textContent =
+    (playerProfile.name || "P").charAt(0).toUpperCase();
+}
+
+function saveProfile(){
+  const name = $("profileNameInput").value.trim();
+  const uid = $("profileUIDInput").value.trim();
+
+  if(!name || !uid){
+    showToast("Name aur UID dono enter karein.");
+    return;
+  }
+
+  playerProfile = {name,uid};
+
+  localStorage.setItem(
+    "battlehub_profile",
+    JSON.stringify(playerProfile)
+  );
+
+  loadProfileUI();
+  showToast("Profile saved!");
+}
+
+/* ADMIN UNLOCK */
+
+function setupAdminUnlock(){
+  let taps = 0;
+  let timer;
+
+  $("adminLogo").addEventListener("click",() => {
+    taps++;
+
+    clearTimeout(timer);
+
+    timer = setTimeout(() => {
+      taps = 0;
+    },1500);
+
+    if(taps >= 5){
+      taps = 0;
+      openAdminLogin();
+    }
+  });
+}
+
+async function openAdminLogin(){
+  const {data:{session}} =
+    await supabaseClient.auth.getSession();
+
+  if(
+    session &&
+    session.user &&
+    String(session.user.email).toLowerCase() ===
+    ADMIN_EMAIL.toLowerCase()
+  ){
+    showPage("adminPage");
+    loadAdminTournaments();
+  }else{
+    showPage("adminLoginPage");
+  }
+}
+
+async function adminLogin(){
+  const email = $("adminEmail").value.trim();
+  const password = $("adminPassword").value;
+
+  const status = $("adminLoginStatus");
+
+  status.innerHTML =
+    `<p style="color:#8992ad">Logging in...</p>`;
+
+  const {data,error} =
+    await supabaseClient.auth.signInWithPassword({
+      email,
+      password
+    });
+
+  if(error){
+    status.innerHTML =
+      `<p style="color:#ff7777">${escapeHTML(error.message)}</p>`;
+    return;
+  }
+
+  if(
+    !data.user ||
+    String(data.user.email).toLowerCase() !==
+    ADMIN_EMAIL.toLowerCase()
+  ){
+    await supabaseClient.auth.signOut();
+
+    status.innerHTML =
+      `<p style="color:#ff7777">Admin access denied.</p>`;
+    return;
+  }
+
+  status.innerHTML =
+    `<p style="color:#7df6a6">Login successful.</p>`;
+
+  showToast("Admin login successful.");
+
+  showPage("adminPage");
+  await loadAdminTournaments();
+}
+
+async function adminResetPassword(){
+  const email = $("adminEmail").value.trim();
+
+  if(!email){
+    showToast("Admin email enter karein.");
+    return;
+  }
+
+  const {error} =
+    await supabaseClient.auth.resetPasswordForEmail(email,{
+      redirectTo:window.location.origin
+    });
+
+  if(error){
+    showToast(error.message);
+    return;
+  }
+
+  showToast("Password reset email sent.");
+}
+
+async function adminLogout(){
+  await supabaseClient.auth.signOut();
+  showToast("Logged out.");
+  showPage("homePage");
+}
+
+/* ADMIN TABS */
+
+function showAdminTab(tab){
+  const create =
+    $("adminCreateTab");
+
+  const manage =
+    $("adminManageTab");
+
+  document.querySelectorAll(".admin-tab")
+    .forEach(x => x.classList.remove("active"));
+
+  if(tab === "create"){
+    create.classList.remove("hidden");
+    manage.classList.add("hidden");
+    document.querySelectorAll(".admin-tab")[0]
+      .classList.add("active");
+  }else{
+    create.classList.add("hidden");
+    manage.classList.remove("hidden");
+    document.querySelectorAll(".admin-tab")[1]
+      .classList.add("active");
+    loadAdminTournaments();
+  }
+}
+
+/* CREATE TOURNAMENT */
+
+async function createTournament(){
+  const name = $("tName").value.trim();
+  const game = $("tGame").value.trim() || "Free Fire";
+  const date = $("tDate").value;
+  const time = $("tTime").value;
+  const maxPlayers = Number($("tMax").value);
+
+  const roomId =
+    $("tRoomId").value.trim() || null;
+
+  const roomPassword =
+    $("tRoomPassword").value.trim() || null;
+
+  const status = $("createStatus");
+
+  if(!name || !date || !time){
+    status.innerHTML =
+      `<p style="color:#ff7777">Name, date aur time required hai.</p>`;
+    return;
+  }
+
+  if(!Number.isInteger(maxPlayers) || maxPlayers < 2){
+    status.innerHTML =
+      `<p style="color:#ff7777">Maximum players valid rakhein.</p>`;
+    return;
+  }
+
+  status.innerHTML =
+    `<p style="color:#8992ad">Creating...</p>`;
+
+  const {error} = await supabaseClient
+    .from("battlehub_tournaments")
+    .insert({
+      name,
+      game,
+      match_date:date,
+      match_time:time,
+      max_players:maxPlayers,
+      room_id:roomId,
+      room_password:roomPassword,
+      room_released:false
+    });
+
+  if(error){
+    console.error(error);
+
+    status.innerHTML =
+      `<p style="color:#ff7777">${escapeHTML(error.message)}</p>`;
 
     return;
   }
 
-  box.innerHTML = mine.map(t=>{
+  status.innerHTML =
+    `<p style="color:#7df6a6">Tournament created successfully.</p>`;
 
-    const hasResult = results.some(r=>
-      r.tournamentId===t.id &&
-      r.uid===player.uid
-    );
+  $("tName").value = "";
+  $("tRoomId").value = "";
+  $("tRoomPassword").value = "";
+
+  showToast("Tournament created.");
+
+  await loadTournaments();
+  await loadAdminTournaments();
+}
+
+/* ADMIN TOURNAMENTS */
+
+async function loadAdminTournaments(){
+  const box = $("adminTournamentList");
+
+  if(!box) return;
+
+  box.innerHTML =
+    `<div class="loading">Loading...</div>`;
+
+  const {data,error} = await supabaseClient
+    .from("battlehub_tournaments")
+    .select("*")
+    .order("match_date",{ascending:false})
+    .order("match_time",{ascending:false});
+
+  if(error){
+    console.error(error);
+    box.innerHTML =
+      `<div class="empty">Unable to load tournaments.</div>`;
+    return;
+  }
+
+  if(!data || !data.length){
+    box.innerHTML =
+      `<div class="empty">No tournaments created.</div>`;
+    return;
+  }
+
+  box.innerHTML = data.map(t => {
+    const count = playerCache[t.id] || 0;
 
     return `
-      <div class="my-card">
+      <div class="admin-tournament">
 
-        <h3>${esc(t.name)}</h3>
+        <div class="card-top">
+          <div>
+            <h3 class="card-title">${escapeHTML(t.name)}</h3>
+            <div class="card-game">
+              ${formatDate(t.match_date)}
+              • ${formatTime(t.match_time)}
+            </div>
+          </div>
 
-        <p>🎮 ${esc(t.game)}</p>
-        <p>📅 ${formatDate(t.date)} • ⏰ ${esc(t.time)}</p>
+          <span class="status ${
+            t.room_released ? "live" : "upcoming"
+          }">
+            ${t.room_released ? "RELEASED" : "HIDDEN"}
+          </span>
+        </div>
 
-        <div class="my-actions">
+        <div class="card-info">
+          <div class="info-item">
+            <small>GAME</small>
+            <strong>${escapeHTML(t.game)}</strong>
+          </div>
 
-          <button onclick="openTournament('${t.id}')">
-            View Match
+          <div class="info-item">
+            <small>PLAYERS</small>
+            <strong>${count}/${t.max_players}</strong>
+          </div>
+
+          <div class="info-item">
+            <small>ROOM</small>
+            <strong>${t.room_released ? "ON" : "OFF"}</strong>
+          </div>
+        </div>
+
+        <div class="room-status ${
+          t.room_released ? "released" : "hidden"
+        }">
+          ${
+            t.room_released
+            ? "🟢 Room ID & Password visible to players"
+            : "🔒 Room ID & Password hidden"
+          }
+        </div>
+
+        <div class="admin-actions">
+          <button class="secondary-btn"
+            onclick="openAdminPlayers('${t.id}')">
+            👥 Players
+          </button>
+
+          <button class="secondary-btn"
+            onclick="openAdminResults('${t.id}')">
+            📊 Results
           </button>
 
           ${
-            hasResult
+            t.room_released
             ?
-            `<button onclick="showToast('Result already submitted.')">
-              ✓ Result Sent
+            `<button class="secondary-btn"
+              onclick="hideRoom('${t.id}')">
+              🔒 Hide Room
             </button>`
             :
-            `<button onclick="openResult('${t.id}')">
-              Submit Result
+            `<button class="primary-btn"
+              onclick="releaseRoom('${t.id}')">
+              🔓 Release Room
             </button>`
           }
 
+          <button class="secondary-btn"
+            onclick="editRoom('${t.id}')">
+            ✏️ Edit Room
+          </button>
         </div>
 
       </div>
     `;
-
   }).join("");
 }
 
+/* PLAYER MANAGEMENT
+   IMPORTANT:
+   There is NO delete/remove button here.
+*/
 
-/* =========================
-   RESULT
-========================= */
+async function openAdminPlayers(tournamentId){
+  const t = tournaments.find(x => x.id === tournamentId);
 
-function openResult(id){
+  let tournament = t;
 
-  const t = tournaments.find(x=>x.id===id);
+  if(!tournament){
+    const {data} = await supabaseClient
+      .from("battlehub_tournaments")
+      .select("*")
+      .eq("id",tournamentId)
+      .single();
 
-  if(!t) return;
+    tournament = data;
+  }
 
-  document.getElementById("resultTournamentId").value = id;
-  document.getElementById("resultName").value = player.name;
+  if(!tournament){
+    showToast("Tournament not found.");
+    return;
+  }
 
-  document.getElementById("resultPlacement").value = "";
-  document.getElementById("resultKills").value = "";
-  document.getElementById("resultPoints").value = "";
-  document.getElementById("resultNote").value = "";
+  currentAdminPlayersTournament = tournament;
 
-  showPage("result");
+  showPage("adminPlayersPage");
+
+  $("adminPlayersTitle").textContent =
+    tournament.name;
+
+  $("adminPlayerMax").textContent =
+    tournament.max_players;
+
+  $("playerSearch").value = "";
+
+  await loadAdminPlayers();
 }
 
-function submitResult(){
+async function loadAdminPlayers(){
+  if(!currentAdminPlayersTournament) return;
 
   const tournamentId =
-    document.getElementById("resultTournamentId").value;
+    currentAdminPlayersTournament.id;
 
-  const placement =
-    Number(document.getElementById("resultPlacement").value);
+  const box = $("adminPlayersList");
 
-  const kills =
-    Number(document.getElementById("resultKills").value);
+  box.innerHTML =
+    `<div class="loading">Loading players...</div>`;
 
-  const points =
-    Number(document.getElementById("resultPoints").value);
+  const {data,error} = await supabaseClient
+    .from("battlehub_players")
+    .select("*")
+    .eq("tournament_id",tournamentId)
+    .order("joined_at",{ascending:true});
 
-  const note =
-    document.getElementById("resultNote").value.trim();
+  if(error){
+    console.error(error);
 
-  if(!tournamentId){
-    showToast("Tournament not selected.");
+    box.innerHTML =
+      `<div class="empty">Unable to load players.</div>`;
+
     return;
   }
 
-  if(!placement || placement<1){
-    showToast("Enter valid placement.");
-    return;
-  }
+  adminPlayers = data || [];
 
-  if(kills<0 || points<0){
-    showToast("Invalid result.");
-    return;
-  }
+  $("adminPlayerCount").textContent =
+    adminPlayers.length;
 
-  const already = results.some(r=>
-    r.tournamentId===tournamentId &&
-    r.uid===player.uid
-  );
-
-  if(already){
-    showToast("Result already submitted.");
-    return;
-  }
-
-  results.push({
-    id:createId(),
-    tournamentId,
-    uid:player.uid,
-    name:player.name,
-    placement,
-    kills,
-    points,
-    note,
-    approved:false,
-    submittedAt:Date.now()
-  });
-
-  saveResults();
-
-  showToast("Result submitted for admin review.");
-
-  setTimeout(()=>{
-    showPage("my");
-  },700);
+  filterAdminPlayers();
 }
 
+function filterAdminPlayers(){
+  const box = $("adminPlayersList");
 
-/* =========================
-   LEADERBOARD
-========================= */
+  if(!box) return;
 
-function renderLeaderboard(){
+  const query =
+    ($("playerSearch")?.value || "")
+      .trim()
+      .toLowerCase();
 
-  const approved = results.filter(r=>r.approved);
-
-  const totals = {};
-
-  approved.forEach(r=>{
-
-    if(!totals[r.uid]){
-      totals[r.uid] = {
-        uid:r.uid,
-        name:r.name,
-        points:0
-      };
-    }
-
-    totals[r.uid].points += Number(r.points)||0;
+  const filtered = adminPlayers.filter(p => {
+    return (
+      String(p.player_name || "")
+        .toLowerCase()
+        .includes(query)
+      ||
+      String(p.player_uid || "")
+        .toLowerCase()
+        .includes(query)
+    );
   });
 
-  let list = Object.values(totals)
-    .sort((a,b)=>b.points-a.points);
-
-  document.getElementById("firstName").textContent =
-    list[0]?.name || "---";
-
-  document.getElementById("firstPoints").textContent =
-    `${list[0]?.points || 0} pts`;
-
-  document.getElementById("secondName").textContent =
-    list[1]?.name || "---";
-
-  document.getElementById("secondPoints").textContent =
-    `${list[1]?.points || 0} pts`;
-
-  document.getElementById("thirdName").textContent =
-    list[2]?.name || "---";
-
-  document.getElementById("thirdPoints").textContent =
-    `${list[2]?.points || 0} pts`;
-
-  const box = document.getElementById("leaderboardList");
-
-  if(!list.length){
+  if(!filtered.length){
     box.innerHTML = `
       <div class="empty">
-        No approved results yet.
+        ${
+          query
+          ? "No player found."
+          : "No players have joined yet."
+        }
       </div>
     `;
     return;
   }
 
-  box.innerHTML = list.map((p,i)=>`
+  box.innerHTML = filtered.map((p,index) => `
+    <div class="player-card">
 
-    <div class="leader-row">
+      <div class="player-main">
 
-      <div class="leader-rank">
-        #${i+1}
-      </div>
+        <div class="player-avatar">
+          ${(p.player_name || "P")
+            .charAt(0)
+            .toUpperCase()}
+        </div>
 
-      <div class="leader-avatar">
-        👤
-      </div>
+        <div class="player-info">
+          <div class="player-name">
+            ${escapeHTML(p.player_name)}
+          </div>
 
-      <div class="leader-info">
-        <b>${esc(p.name)}</b>
-        <small>Player</small>
-      </div>
+          <div class="player-uid">
+            UID: ${escapeHTML(p.player_uid)}
+          </div>
 
-      <div class="leader-points">
-        ${p.points} pts
+          <div class="player-uid">
+            Joined: ${new Date(p.joined_at)
+              .toLocaleString("en-IN")}
+          </div>
+        </div>
+
+        <div class="player-actions">
+          <button
+            class="copy-btn"
+            onclick="copyText(${JSON.stringify(
+              String(p.player_uid || "")
+            )})">
+            📋 Copy UID
+          </button>
+        </div>
+
       </div>
 
     </div>
-
   `).join("");
 }
 
+/* ROOM MANAGEMENT */
 
-/* =========================
-   PROFILE
-========================= */
+async function editRoom(id){
+  const t = tournaments.find(x => x.id === id);
 
-function renderProfile(){
+  if(!t) return;
 
-  document.getElementById("profileName").textContent =
-    player.name || "Player";
+  const roomId =
+    prompt(
+      "Room ID:",
+      t.room_id || ""
+    );
 
-  document.getElementById("profileUid").textContent =
-    `UID: ${player.uid || "Not set"}`;
+  if(roomId === null) return;
 
-  document.getElementById("playerNameInput").value =
-    player.name==="Player" ? "" : player.name;
+  const password =
+    prompt(
+      "Room Password:",
+      t.room_password || ""
+    );
 
-  document.getElementById("playerUidInput").value =
-    player.uid || "";
+  if(password === null) return;
 
-  const joined = tournaments.filter(t=>
-    t.players.some(p=>p.uid===player.uid && player.uid)
-  ).length;
+  const {error} = await supabaseClient
+    .from("battlehub_tournaments")
+    .update({
+      room_id:roomId.trim() || null,
+      room_password:password.trim() || null
+    })
+    .eq("id",id);
 
-  const resultCount = results.filter(r=>
-    r.uid===player.uid
-  ).length;
-
-  const total = results
-    .filter(r=>r.uid===player.uid && r.approved)
-    .reduce((sum,r)=>sum+(Number(r.points)||0),0);
-
-  document.getElementById("joinedCount").textContent = joined;
-  document.getElementById("resultCount").textContent = resultCount;
-  document.getElementById("totalPoints").textContent = total;
-}
-
-function saveProfile(){
-
-  const name =
-    document.getElementById("playerNameInput").value.trim();
-
-  const uid =
-    document.getElementById("playerUidInput").value.trim();
-
-  if(!name){
-    showToast("Enter player name.");
+  if(error){
+    console.error(error);
+    showToast("Room update failed.");
     return;
   }
 
-  player.name = name;
-  player.uid = uid || createId();
+  showToast("Room details updated.");
 
-  savePlayer();
-
-  showToast("Profile saved!");
-
-  renderProfile();
+  await loadTournaments();
+  await loadAdminTournaments();
 }
 
+async function releaseRoom(id){
+  const t = tournaments.find(x => x.id === id);
 
-/* =========================
-   ADMIN
-========================= */
+  if(!t) return;
 
-function renderAdmin(){
+  let roomId =
+    (t.room_id || "").trim();
 
-  const box = document.getElementById("adminTournamentList");
+  let password =
+    (t.room_password || "").trim();
 
-  if(!box) return;
+  if(!roomId){
+    roomId =
+      prompt("Enter Room ID:");
 
-  if(!tournaments.length){
-    box.innerHTML = `<div class="empty">No tournaments.</div>`;
+    if(roomId === null) return;
+
+    roomId = roomId.trim();
+  }
+
+  if(!password){
+    password =
+      prompt("Enter Room Password:");
+
+    if(password === null) return;
+
+    password = password.trim();
+  }
+
+  if(!roomId || !password){
+    showToast("Room ID aur password required.");
     return;
   }
 
-  box.innerHTML = tournaments.map(t=>`
+  const {error} = await supabaseClient
+    .from("battlehub_tournaments")
+    .update({
+      room_id:roomId,
+      room_password:password,
+      room_released:true
+    })
+    .eq("id",id);
 
-    <div class="admin-card">
+  if(error){
+    console.error(error);
+    showToast("Room release failed.");
+    return;
+  }
 
-      <h3>${esc(t.name)}</h3>
+  showToast("Room released.");
 
-      <p>🎮 ${esc(t.game)}</p>
-      <p>📅 ${formatDate(t.date)} • ⏰ ${esc(t.time)}</p>
-      <p>👥 Players: ${t.players.length}/${t.maxPlayers}</p>
+  await loadTournaments();
+  await loadAdminTournaments();
+}
 
-      <p>
-        Room:
-        <strong>
-          ${t.roomReleased ? "RELEASED 🔓" : "LOCKED 🔒"}
-        </strong>
-      </p>
+async function hideRoom(id){
+  const {error} = await supabaseClient
+    .from("battlehub_tournaments")
+    .update({
+      room_released:false
+    })
+    .eq("id",id);
+
+  if(error){
+    console.error(error);
+    showToast("Unable to hide room.");
+    return;
+  }
+
+  showToast("Room hidden.");
+
+  await loadTournaments();
+  await loadAdminTournaments();
+}
+
+/* ADMIN RESULTS */
+
+async function openAdminResults(tournamentId){
+  const t = tournaments.find(x => x.id === tournamentId);
+
+  adminResultsTournament = t;
+
+  showPage("adminResultsPage");
+
+  await loadAdminResults();
+}
+
+async function loadAdminResults(){
+  if(!adminResultsTournament) return;
+
+  const box = $("adminResultsList");
+
+  box.innerHTML =
+    `<div class="loading">Loading results...</div>`;
+
+  const {data,error} = await supabaseClient
+    .from("battlehub_results")
+    .select("*")
+    .eq("tournament_id",adminResultsTournament.id)
+    .order("submitted_at",{ascending:false});
+
+  if(error){
+    console.error(error);
+
+    box.innerHTML =
+      `<div class="empty">Unable to load results.</div>`;
+
+    return;
+  }
+
+  if(!data || !data.length){
+    box.innerHTML =
+      `<div class="empty">No results submitted yet.</div>`;
+    return;
+  }
+
+  box.innerHTML = data.map(r => `
+    <div class="result-card">
+
+      <div class="result-top">
+        <strong>${escapeHTML(r.player_name)}</strong>
+
+        <span class="${
+          r.approved ? "approved" : "pending"
+        }">
+          ${r.approved ? "✓ Approved" : "⏳ Pending"}
+        </span>
+      </div>
+
+      <div class="result-meta">
+        UID: ${escapeHTML(r.player_uid)}
+        <br>
+        Placement: ${r.placement}
+        • Kills: ${r.kills}
+        • Points: ${r.points}
+      </div>
 
       <div class="admin-actions">
 
-        <button class="release"
-          onclick="toggleRoom('${t.id}')">
-          ${t.roomReleased ? "Lock Room" : "Release Room"}
-        </button>
-
-        <button onclick="viewPlayers('${t.id}')">
-          Players
-        </button>
-
-        <button onclick="approveResults('${t.id}')">
-          Results
-        </button>
-
-        <button class="danger"
-          onclick="deleteTournament('${t.id}')">
-          Delete
-        </button>
+        ${
+          r.approved
+          ?
+          `<button class="secondary-btn"
+            onclick="setResultApproval('${r.id}',false)">
+            ↩ Unapprove
+          </button>`
+          :
+          `<button class="primary-btn"
+            onclick="setResultApproval('${r.id}',true)">
+            ✓ Approve
+          </button>`
+        }
 
       </div>
 
     </div>
-
   `).join("");
 }
 
+async function setResultApproval(id,approved){
+  const {error} = await supabaseClient
+    .from("battlehub_results")
+    .update({approved})
+    .eq("id",id);
 
-/* =========================
-   CREATE TOURNAMENT
-========================= */
-
-function createTournament(){
-
-  const name =
-    document.getElementById("tName").value.trim();
-
-  const game =
-    document.getElementById("tGame").value;
-
-  const date =
-    document.getElementById("tDate").value;
-
-  const time =
-    document.getElementById("tTime").value;
-
-  const maxPlayers =
-    Number(document.getElementById("tMax").value);
-
-  const roomId =
-    document.getElementById("tRoomId").value.trim();
-
-  const roomPass =
-    document.getElementById("tRoomPass").value.trim();
-
-  if(!name || !date || !time){
-    showToast("Fill tournament name, date and time.");
+  if(error){
+    console.error(error);
+    showToast("Result update failed.");
     return;
   }
-
-  if(maxPlayers<2){
-    showToast("Players must be at least 2.");
-    return;
-  }
-
-  if(!roomId || !roomPass){
-    showToast("Enter room ID and password.");
-    return;
-  }
-
-  const tournament = {
-
-    id:createId(),
-
-    name,
-    game,
-    date,
-    time,
-
-    maxPlayers,
-
-    players:[],
-
-    roomId,
-    roomPass,
-
-    roomReleased:false,
-
-    createdAt:Date.now()
-  };
-
-  tournaments.push(tournament);
-
-  saveTournaments();
-
-  document.getElementById("tName").value="";
-  document.getElementById("tDate").value="";
-  document.getElementById("tTime").value="";
-  document.getElementById("tMax").value="48";
-  document.getElementById("tRoomId").value="";
-  document.getElementById("tRoomPass").value="";
-
-  showToast("Tournament created!");
-
-  renderAdmin();
-  renderHome();
-}
-
-
-/* =========================
-   ROOM RELEASE
-========================= */
-
-function toggleRoom(id){
-
-  const t = tournaments.find(x=>x.id===id);
-
-  if(!t) return;
-
-  t.roomReleased = !t.roomReleased;
-
-  saveTournaments();
 
   showToast(
-    t.roomReleased
-    ? "Room details released!"
-    : "Room locked again."
+    approved
+    ? "Result approved."
+    : "Result unapproved."
   );
 
-  renderAdmin();
+  await loadAdminResults();
+}
 
-  if(currentTournament?.id===id){
-    currentTournament = t;
+/* COPY */
+
+async function copyText(text){
+  try{
+    await navigator.clipboard.writeText(String(text));
+    showToast("Copied!");
+  }catch(e){
+    const area = document.createElement("textarea");
+    area.value = String(text);
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+    showToast("Copied!");
   }
 }
 
+/* REALTIME */
 
-/* =========================
-   VIEW PLAYERS
-========================= */
+function setupRealtime(){
 
-function viewPlayers(id){
+  supabaseClient
+    .channel("battlehub-tournaments")
+    .on(
+      "postgres_changes",
+      {
+        event:"*",
+        schema:"public",
+        table:"battlehub_tournaments"
+      },
+      async () => {
+        await loadTournaments();
 
-  const t = tournaments.find(x=>x.id===id);
+        if(
+          document.querySelector("#adminPage.active")
+        ){
+          await loadAdminTournaments();
+        }
 
-  if(!t) return;
+        if(
+          document.querySelector("#detailsPage.active") &&
+          currentTournament
+        ){
+          const updated =
+            tournaments.find(
+              t => t.id === currentTournament.id
+            );
 
-  if(!t.players.length){
-    showToast("No players joined yet.");
-    return;
-  }
+          if(updated){
+            currentTournament = updated;
+            await openTournament(updated.id);
+          }
+        }
+      }
+    )
+    .subscribe();
 
-  const names = t.players
-    .map((p,i)=>`${i+1}. ${p.name}`)
-    .join("\n");
+  supabaseClient
+    .channel("battlehub-players")
+    .on(
+      "postgres_changes",
+      {
+        event:"*",
+        schema:"public",
+        table:"battlehub_players"
+      },
+      async () => {
 
-  alert(
-    `${t.name}\n\nPlayers:\n${names}`
-  );
+        await loadPlayerCounts();
+
+        renderTournaments();
+
+        if(
+          document.querySelector("#adminPage.active")
+        ){
+          await loadAdminTournaments();
+        }
+
+        if(
+          document.querySelector("#adminPlayersPage.active") &&
+          currentAdminPlayersTournament
+        ){
+          await loadAdminPlayers();
+        }
+
+        if(
+          document.querySelector("#detailsPage.active") &&
+          currentTournament
+        ){
+          await openTournament(currentTournament.id);
+        }
+      }
+    )
+    .subscribe();
+
+  supabaseClient
+    .channel("battlehub-results")
+    .on(
+      "postgres_changes",
+      {
+        event:"*",
+        schema:"public",
+        table:"battlehub_results"
+      },
+      async () => {
+
+        if(
+          document.querySelector("#leaderboardPage.active")
+        ){
+          await loadLeaderboard();
+        }
+
+        if(
+          document.querySelector("#adminResultsPage.active") &&
+          adminResultsTournament
+        ){
+          await loadAdminResults();
+        }
+      }
+    )
+    .subscribe();
 }
-
-
-/* =========================
-   ADMIN RESULTS
-========================= */
-
-function approveResults(id){
-
-  const t = tournaments.find(x=>x.id===id);
-
-  if(!t) return;
-
-  const pending = results.filter(r=>
-    r.tournamentId===id &&
-    !r.approved
-  );
-
-  if(!pending.length){
-    showToast("No pending results.");
-    return;
-  }
-
-  let message =
-    `${t.name}\n\nPending Results:\n\n`;
-
-  pending.forEach((r,i)=>{
-
-    message +=
-      `${i+1}. ${r.name}\n`+
-      `Placement: ${r.placement}\n`+
-      `Kills: ${r.kills}\n`+
-      `Points: ${r.points}\n\n`;
-  });
-
-  const approve = confirm(
-    message +
-    "Press OK to approve ALL these results."
-  );
-
-  if(!approve) return;
-
-  pending.forEach(r=>{
-    r.approved = true;
-  });
-
-  saveResults();
-
-  showToast("Results approved!");
-
-  renderAdmin();
-}
-
-
-/* =========================
-   DELETE
-========================= */
-
-function deleteTournament(id){
-
-  const t = tournaments.find(x=>x.id===id);
-
-  if(!t) return;
-
-  const yes = confirm(
-    `Delete "${t.name}"?`
-  );
-
-  if(!yes) return;
-
-  tournaments =
-    tournaments.filter(x=>x.id!==id);
-
-  results =
-    results.filter(x=>x.tournamentId!==id);
-
-  saveTournaments();
-  saveResults();
-
-  showToast("Tournament deleted.");
-
-  renderAdmin();
-  renderHome();
-}
-
-
-/* =========================
-   TOAST
-========================= */
-
-let toastTimer;
-
-function showToast(message){
-
-  const toast =
-    document.getElementById("toast");
-
-  toast.textContent = message;
-
-  toast.classList.add("show");
-
-  clearTimeout(toastTimer);
-
-  toastTimer = setTimeout(()=>{
-    toast.classList.remove("show");
-  },2200);
-}
-
-
-/* =========================
-   ADMIN ACCESS
-========================= */
-
-/*
-  Admin panel open karne ke liye
-  browser console ki zarurat nahi.
-
-  Profile page par 5 baar
-  "BATTLEHUB" title tap karne se
-  admin panel open hoga.
-*/
-
-let adminTapCount = 0;
-let adminTapTimer = null;
-
-document.querySelector(".brand").addEventListener("click",()=>{
-
-  adminTapCount++;
-
-  clearTimeout(adminTapTimer);
-
-  adminTapTimer = setTimeout(()=>{
-    adminTapCount=0;
-  },1500);
-
-  if(adminTapCount>=5){
-
-    adminTapCount=0;
-
-    showPage("admin");
-
-    showToast("Admin Panel opened.");
-  }
-});
-
-
-/* =========================
-   INITIAL LOAD
-========================= */
-
-function initialLoad(){
-
-  renderHome();
-  renderTournaments();
-  renderProfile();
-
-  document
-    .querySelector('[data-page="home"]')
-    ?.classList.add("active");
-
-}
-
-initialLoad();
-
-
-/* =========================
-   AUTO REFRESH
-========================= */
-
-setInterval(()=>{
-
-  if(currentTournament &&
-     document.getElementById("details").classList.contains("active")){
-
-    renderDetails();
-  }
-
-},1000);
